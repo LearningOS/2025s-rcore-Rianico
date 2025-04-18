@@ -1,0 +1,9 @@
+[default_config]
+assembler = "go"
+instruction_set = "riscv"
+version = "0.10.0"
+
+[default_config.opts]
+compiler = "zig"
+default_diagnostics = false
+diagnostics = true

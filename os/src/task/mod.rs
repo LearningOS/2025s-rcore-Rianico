@@ -6,22 +6,23 @@
 //! A single global instance of [`TaskManager`] called `TASK_MANAGER` controls
 //! all the tasks in the operating system.
 //!
-//! Be careful when you see `__switch` ASM function in `switch.S`. Control flow around this function
-//! might not be what you expect.
+//! Be careful when you see `__switch` ASM function in `switch.S`. Control flow
+//! around this function might not be what you expect.
 
 mod context;
 mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
-use crate::config::MAX_APP_NUM;
-use crate::loader::{get_num_app, init_app_cx};
-use crate::sync::UPSafeCell;
+pub use context::TaskContext;
+use hashbrown::HashMap;
 use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
 
-pub use context::TaskContext;
+use crate::config::MAX_APP_NUM;
+use crate::loader::{get_num_app, init_app_cx};
+use crate::sync::UPSafeCell;
 
 /// The task manager, where all the tasks are managed.
 ///
@@ -45,6 +46,8 @@ pub struct TaskManagerInner {
     tasks: [TaskControlBlock; MAX_APP_NUM],
     /// id of current `Running` task
     current_task: usize,
+    /// syscall statistics
+    sys_track_info: HashMap<usize, HashMap<usize, isize>>,
 }
 
 lazy_static! {
@@ -65,6 +68,7 @@ lazy_static! {
                 UPSafeCell::new(TaskManagerInner {
                     tasks,
                     current_task: 0,
+                    sys_track_info: HashMap::new(),
                 })
             },
         }
@@ -74,8 +78,9 @@ lazy_static! {
 impl TaskManager {
     /// Run the first task in task list.
     ///
-    /// Generally, the first task in task list is an idle task (we call it zero process later).
-    /// But in ch3, we load apps statically, so the first task is a real app.
+    /// Generally, the first task in task list is an idle task (we call it zero
+    /// process later). But in ch3, we load apps statically, so the first
+    /// task is a real app.
     fn run_first_task(&self) -> ! {
         let mut inner = self.inner.exclusive_access();
         let task0 = &mut inner.tasks[0];
@@ -116,7 +121,8 @@ impl TaskManager {
     }
 
     /// Switch current `Running` task to the task we have found,
-    /// or there is no `Ready` task and we can exit with all applications completed
+    /// or there is no `Ready` task and we can exit with all applications
+    /// completed
     fn run_next_task(&self) {
         if let Some(next) = self.find_next_task() {
             let mut inner = self.inner.exclusive_access();
@@ -134,6 +140,30 @@ impl TaskManager {
         } else {
             panic!("All applications completed!");
         }
+    }
+
+    /// record syscall count
+    fn record_sys_call_cnt(&self, ecall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current_task = inner.current_task;
+        inner
+            .sys_track_info
+            .entry(current_task)
+            .and_modify(|record| {
+                record.entry(ecall_id).and_modify(|cnt| *cnt += 1).or_insert(1);
+            })
+            .or_insert({
+                let mut record = HashMap::new();
+                record.insert(ecall_id, 1);
+                record
+            });
+    }
+
+    /// get syscall count
+    fn get_sys_call_cnt(&self, ecall_id: usize) -> isize {
+        let inner = self.inner.exclusive_access();
+        let current_task = inner.current_task;
+        *inner.sys_track_info.get(&current_task).and_then(|record| record.get(&ecall_id)).unwrap_or(&0)
     }
 }
 
@@ -168,4 +198,14 @@ pub fn suspend_current_and_run_next() {
 pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
+}
+
+/// Record syscall track
+pub fn record_sys_call_cnt(ecall_id: usize) {
+    TASK_MANAGER.record_sys_call_cnt(ecall_id);
+}
+
+/// Get syscall cnt
+pub fn get_sys_call_cnt(ecall_id: usize) -> isize {
+    TASK_MANAGER.get_sys_call_cnt(ecall_id)
 }

@@ -14,15 +14,15 @@
 
 mod context;
 
-use crate::syscall::syscall;
-use crate::task::{exit_current_and_run_next, suspend_current_and_run_next};
-use crate::timer::set_next_trigger;
 use core::arch::global_asm;
-use riscv::register::{
-    mtvec::TrapMode,
-    scause::{self, Exception, Interrupt, Trap},
-    sie, stval, stvec,
-};
+
+use riscv::register::mtvec::TrapMode;
+use riscv::register::scause::{self, Exception, Interrupt, Trap};
+use riscv::register::{sie, stval, stvec};
+
+use crate::syscall::syscall;
+use crate::task::{exit_current_and_run_next, record_sys_call_cnt, suspend_current_and_run_next};
+use crate::timer::set_next_trigger;
 
 global_asm!(include_str!("trap.S"));
 
@@ -51,13 +51,17 @@ pub fn trap_handler(cx: &mut TrapContext) -> &mut TrapContext {
                                // trace!("into {:?}", scause.cause());
     match scause.cause() {
         Trap::Exception(Exception::UserEnvCall) => {
+            record_sys_call_cnt(cx.x[17]);
             // jump to next instruction anyway
             cx.sepc += 4;
             // get system call return value
             cx.x[10] = syscall(cx.x[17], [cx.x[10], cx.x[11], cx.x[12]]) as usize;
         }
         Trap::Exception(Exception::StoreFault) | Trap::Exception(Exception::StorePageFault) => {
-            println!("[kernel] PageFault in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.", stval, cx.sepc);
+            println!(
+                "[kernel] PageFault in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
+                stval, cx.sepc
+            );
             exit_current_and_run_next();
         }
         Trap::Exception(Exception::IllegalInstruction) => {
@@ -69,11 +73,7 @@ pub fn trap_handler(cx: &mut TrapContext) -> &mut TrapContext {
             suspend_current_and_run_next();
         }
         _ => {
-            panic!(
-                "Unsupported trap {:?}, stval = {:#x}!",
-                scause.cause(),
-                stval
-            );
+            panic!("Unsupported trap {:?}, stval = {:#x}!", scause.cause(), stval);
         }
     }
     cx
